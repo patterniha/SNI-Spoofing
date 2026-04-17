@@ -1,6 +1,5 @@
 import asyncio
 import socket
-import sys
 import threading
 import time
 
@@ -22,6 +21,8 @@ class FakeInjectiveConnection(MonitorConnection):
         self.bypass_method = bypass_method
         self.peer_sock = peer_sock
         self.running_loop = asyncio.get_running_loop()
+        # اضافه شده برای سازگاری با سیستم پاکسازی اتصالات رها شده در main.py
+        self.created_at = time.time()
 
 
 class FakeTcpInjector(TcpInjector):
@@ -31,7 +32,10 @@ class FakeTcpInjector(TcpInjector):
         self.connections = connections
 
     def fake_send_thread(self, packet: Packet, connection: FakeInjectiveConnection):
-        time.sleep(0.001)
+        # یک تاخیر بسیار کوتاه (۵ میلی‌ثانیه) خارج از Lock قرار داده شد 
+        # تا سیستم‌عامل فرصت کند پکت ACK اصلی را در شبکه ارسال کند.
+        time.sleep(0.005)
+        
         with connection.thread_lock:
             if not connection.monitor:
                 return
@@ -41,32 +45,57 @@ class FakeTcpInjector(TcpInjector):
             packet.tcp.payload = connection.fake_data
             if packet.ipv4:
                 packet.ipv4.ident = (packet.ipv4.ident + 1) & 0xffff
+            
             # if connection.bypass_method == "wrong_checksum":
             #     ...
+            
             if connection.bypass_method == "wrong_seq":
                 packet.tcp.seq_num = (connection.syn_seq + 1 - len(packet.tcp.payload)) & 0xffffffff
                 connection.fake_sent = True
-                self.w.send(packet, True)
-
-
-
-
+                try:
+                    self.w.send(packet, True)
+                except Exception as e:
+                    print(f"خطا در تزریق پکت جعلی برای کانکشن {connection.id}: {e}")
             else:
-                sys.exit("not implemented method!")
+                # به جای sys.exit که کل برنامه را می‌بندد، کانکشن فعلی را به عنوان نامعتبر رد می‌کنیم
+                print(f"خطا: متد بای‌پس ناشناخته '{connection.bypass_method}'")
+                self.on_unexpected_packet(packet, connection, "not implemented method!")
 
     def on_unexpected_packet(self, packet: Packet, connection: FakeInjectiveConnection, info_m: str):
-        print(info_m, packet)
-        connection.sock.close()
-        connection.peer_sock.close()
+        # برای جلوگیری از اسپم شدن ترمینال، لاگ‌ها به شکل ساختاریافته چاپ می‌شوند
+        # print(f"[{connection.src_port}->{connection.dst_port}] {info_m}")
+        
+        # بستن امن سوکت‌ها برای جلوگیری از Crash
+        try:
+            connection.sock.close()
+        except Exception:
+            pass
+            
+        try:
+            connection.peer_sock.close()
+        except Exception:
+            pass
+            
         connection.monitor = False
         connection.t2a_msg = "unexpected_close"
-        connection.running_loop.call_soon_threadsafe(connection.t2a_event.set, )
-        self.w.send(packet, False)
+        
+        # اطمینان از باز بودن Loop قبل از ارسال سیگنال
+        try:
+            if not connection.running_loop.is_closed():
+                connection.running_loop.call_soon_threadsafe(connection.t2a_event.set)
+        except Exception:
+            pass
+            
+        try:
+            self.w.send(packet, False)
+        except Exception:
+            pass
 
     def on_inbound_packet(self, packet: Packet, connection: FakeInjectiveConnection):
         if connection.syn_seq == -1:
             self.on_unexpected_packet(packet, connection, "unexpected inbound packet, no syn sent!")
             return
+            
         if packet.tcp.ack and packet.tcp.syn and (not packet.tcp.rst) and (not packet.tcp.fin) and (
                 len(packet.tcp.payload) == 0):
             seq_num = packet.tcp.seq_num
@@ -82,8 +111,13 @@ class FakeTcpInjector(TcpInjector):
                                               ack_num) + " " + str(connection.syn_seq))
                 return
             connection.syn_ack_seq = seq_num
-            self.w.send(packet, False)
+            
+            try:
+                self.w.send(packet, False)
+            except Exception:
+                pass
             return
+            
         if packet.tcp.ack and (not packet.tcp.syn) and (not packet.tcp.rst) and (
                 not packet.tcp.fin) and (len(packet.tcp.payload) == 0) and connection.fake_sent:
             seq_num = packet.tcp.seq_num
@@ -101,8 +135,13 @@ class FakeTcpInjector(TcpInjector):
 
             connection.monitor = False
             connection.t2a_msg = "fake_data_ack_recv"
-            connection.running_loop.call_soon_threadsafe(connection.t2a_event.set, )
+            try:
+                if not connection.running_loop.is_closed():
+                    connection.running_loop.call_soon_threadsafe(connection.t2a_event.set)
+            except Exception:
+                pass
             return
+            
         self.on_unexpected_packet(packet, connection, "unexpected inbound packet")
         return
 
@@ -110,6 +149,7 @@ class FakeTcpInjector(TcpInjector):
         if connection.sch_fake_sent:
             self.on_unexpected_packet(packet, connection, "unexpected outbound packet, recv packet after fake sent!")
             return
+            
         if packet.tcp.syn and (not packet.tcp.ack) and (not packet.tcp.rst) and (not packet.tcp.fin) and (
                 len(packet.tcp.payload) == 0):
             seq_num = packet.tcp.seq_num
@@ -122,8 +162,12 @@ class FakeTcpInjector(TcpInjector):
                     seq_num) + " " + str(connection.syn_seq))
                 return
             connection.syn_seq = seq_num
-            self.w.send(packet, False)
+            try:
+                self.w.send(packet, False)
+            except Exception:
+                pass
             return
+            
         if packet.tcp.ack and (not packet.tcp.syn) and (not packet.tcp.rst) and (not packet.tcp.fin) and (
                 len(packet.tcp.payload) == 0):
             seq_num = packet.tcp.seq_num
@@ -141,10 +185,15 @@ class FakeTcpInjector(TcpInjector):
                                               connection.syn_ack_seq))
                 return
 
-            self.w.send(packet, False)
+            try:
+                self.w.send(packet, False)
+            except Exception:
+                pass
+                
             connection.sch_fake_sent = True
             threading.Thread(target=self.fake_send_thread, args=(packet, connection), daemon=True).start()
             return
+            
         self.on_unexpected_packet(packet, connection, "unexpected outbound packet")
         return
 
@@ -154,24 +203,41 @@ class FakeTcpInjector(TcpInjector):
             try:
                 connection = self.connections[c_id]
             except KeyError:
-                self.w.send(packet, False)
+                try:
+                    self.w.send(packet, False)
+                except Exception:
+                    pass
             else:
                 with connection.thread_lock:
                     if not connection.monitor:
-                        self.w.send(packet, False)
+                        try:
+                            self.w.send(packet, False)
+                        except Exception:
+                            pass
                         return
                     self.on_inbound_packet(packet, connection)
+                    
         elif packet.is_outbound:
             c_id = (packet.ip.src_addr, packet.tcp.src_port, packet.ip.dst_addr, packet.tcp.dst_port)
             try:
                 connection = self.connections[c_id]
             except KeyError:
-                self.w.send(packet, False)
+                try:
+                    self.w.send(packet, False)
+                except Exception:
+                    pass
             else:
                 with connection.thread_lock:
                     if not connection.monitor:
-                        self.w.send(packet, False)
+                        try:
+                            self.w.send(packet, False)
+                        except Exception:
+                            pass
                         return
                     self.on_outbound_packet(packet, connection)
         else:
-            sys.exit("impossible direction!")
+            # sys.exit("impossible direction!") به طور کامل حذف شد تا برنامه کرش نکند
+            try:
+                self.w.send(packet, False)
+            except Exception:
+                pass
