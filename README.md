@@ -390,13 +390,3 @@ utils/
 ```
 
 ---
-
-## Legal / Ethics | ملاحظات حقوقی و اخلاقی
-
-### English
-
-Use this project only where you have explicit authorization. You are responsible for compliance with local laws, network policies, and terms of service.
-
-### فارسی
-
-این پروژه را فقط در محیطی استفاده کنید که مجوز صریح دارید. مسئولیت رعایت قوانین محلی، سیاست‌های شبکه و شرایط سرویس با خود شماست.
