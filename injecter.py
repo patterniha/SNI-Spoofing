@@ -1,4 +1,3 @@
-import sys
 from abc import ABC, abstractmethod
 
 from pydivert import WinDivert, Packet
@@ -28,7 +27,7 @@ class TcpInjector(ABC):
 
     @abstractmethod
     def inject(self, packet: Packet):
-        sys.exit("Not implemented")
+        raise NotImplementedError("inject must be implemented by subclasses")
 
     def run(self):
         with self.w:
