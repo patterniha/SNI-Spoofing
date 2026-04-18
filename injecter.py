@@ -1,37 +1,49 @@
 import sys
 from abc import ABC, abstractmethod
+from typing import Optional
 
 from pydivert import WinDivert, Packet
 
 
-# from pydivert.consts import *
-
-
 class TcpInjector(ABC):
-    def __init__(self, w_filter: str):
-        # self.interface_ipv4 = interface_ipv4
-        # self.interface_ipv6 = interface_ipv6
-        # ip_filter = ip4_filter = ip6_filter = ""
-        # if self.interface_ipv4:
-        #     ip4_filter = "(ip.SrcAddr == " + self.interface_ipv4 + " or ip.DstAddr == " + self.interface_ipv4 + ")"
-        #     ip_filter = ip4_filter
-        # if self.interface_ipv6:
-        #     ip6_filter = "(ipv6.SrcAddr == " + self.interface_ipv6 + " or ipv6.DstAddr == " + self.interface_ipv6 + ")"
-        #     ip_filter = ip6_filter
-        # if self.interface_ipv4 and self.interface_ipv6:
-        #     ip_filter = "(" + ip4_filter + " or " + ip6_filter + ")"
-        #
-        # self.filter = "tcp"
-        # if ip_filter:
-        #     self.filter += " and " + ip_filter
-        self.w: WinDivert = WinDivert(w_filter)
+    def __init__(self, w_filter: str, max_packets: int = 65535):
+        self._filter = w_filter
+        self._max_packets = max_packets
+        self._divert: Optional[WinDivert] = None
+        self._running = False
 
     @abstractmethod
     def inject(self, packet: Packet):
-        sys.exit("Not implemented")
+        raise NotImplementedError
 
-    def run(self):
-        with self.w:
-            while True:
-                packet = self.w.recv(65575)
-                self.inject(packet)
+    def start(self):
+        if self._running:
+            return
+        self._divert = WinDivert(self._filter)
+        self._running = True
+        self._loop()
+
+    def stop(self):
+        self._running = False
+        if self._divert:
+            try:
+                self._divert.close()
+            except:
+                pass
+            self._divert = None
+
+    def _loop(self):
+        try:
+            with self._divert:
+                while self._running:
+                    try:
+                        packet = self._divert.recv(self._max_packets)
+                        if not packet:
+                            continue
+                        self.inject(packet)
+                    except KeyboardInterrupt:
+                        break
+                    except Exception:
+                        continue
+        finally:
+            self.stop()
